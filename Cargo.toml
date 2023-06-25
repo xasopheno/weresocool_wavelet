@@ -13,4 +13,8 @@ ndarray = "0.15.6"
 num = "0.4.0"
 rand = "0.8.5"
 weresocool_ast = { path="../weresocool/ast", version = "^1.0.47" }
+weresocool_error = { path="../weresocool/error", version = "^1.0.47" }
+weresocool_core = { path="../weresocool/core", version = "^1.0.47" }
 weresocool_instrument = { path="../weresocool/instrument", version = "^1.0.47" }
+weresocool_shared = { path="../weresocool/shared", version = "^1.0.47" }
+scop = { path="../weresocool/scop", version = "^1.0.47" }

@@ -1,8 +1,19 @@
 use fastcwt::*;
 use hound::WavReader;
 use num::Rational64;
+use scop::Defs;
 use std::fs::File;
+use std::sync::{Arc, Mutex};
 use weresocool_ast::{NormalForm, PointOp};
+use weresocool_core::{
+    generation::parsed_to_render::{RenderReturn, RenderType},
+    interpretable::{InputType::Filename, Interpretable},
+    manager::{RenderManager, VisEvent},
+    portaudio::real_time_render_manager,
+};
+use weresocool_error::Error;
+use weresocool_instrument::renderable::{nf_to_vec_renderable, renderables_to_render_voices};
+use weresocool_instrument::Basis;
 
 fn main() {
     let mut reader = WavReader::open("simple.wav").unwrap();
@@ -24,22 +35,35 @@ fn main() {
         let mut ops: Vec<PointOp> = Vec::new();
 
         for peak in peaks {
-            let point_op = PointOp {
-                fm: Rational64::new(*peak.freq.numer() as i64, *peak.freq.denom() as i64), // frequency as ratio from fundamental
-                fa: Rational64::new(0, 1),
-                pm: Rational64::new(0, 1),
-                pa: Rational64::new(0, 1),
-                g: Rational64::new((peak.magnitude * 1000.0).round() as i64, 1000), // gain from CWT peak magnitude
-                l: Rational64::new(window_size as i64, reader.spec().sample_rate as i64), // length based on window size and sample rate
-                ..PointOp::default()
-            };
+            if peak.freq.numer() > &(20 as i64) && peak.magnitude > 0.0 {
+                let point_op = PointOp {
+                    fm: Rational64::new(*peak.freq.numer() as i64, *peak.freq.denom() as i64),
+                    fa: Rational64::new(0, 1),
+                    pm: Rational64::new(0, 1),
+                    pa: Rational64::new(0, 1),
+                    g: Rational64::new((peak.magnitude * 1000.0).round() as i64, 1000),
+                    l: Rational64::new(window_size as i64, reader.spec().sample_rate as i64),
+                    ..PointOp::default()
+                };
 
-            ops.push(point_op);
+                ops.push(point_op);
+            }
         }
 
-        operations.push(ops);
+        if !ops.is_empty() {
+            operations.push(ops);
+        }
     }
-    dbg!(operations);
+
+    dbg!(operations.len());
+    dbg!(operations[0].len());
+
+    let normal_form = NormalForm {
+        operations,
+        length_ratio: Rational64::new(1, 1),
+    };
+
+    play(normal_form).unwrap();
 }
 
 fn perform_cwt(input: &[f32]) -> Vec<Vec<num::Complex<f64>>> {
@@ -71,6 +95,8 @@ pub fn identify_peaks(data: &[num::Complex<f64>], sample_rate: usize) -> Vec<Pea
 
     let magnitudes: Vec<f64> = data.iter().map(|c| c.norm()).collect();
 
+    let max_magnitude = magnitudes.iter().cloned().fold(0. / 0., f64::max); // Find maximum magnitude
+
     let n = magnitudes.len();
 
     for i in 1..(n - 1) {
@@ -78,10 +104,40 @@ pub fn identify_peaks(data: &[num::Complex<f64>], sample_rate: usize) -> Vec<Pea
             let freq = Rational64::new((i * sample_rate) as i64, n as i64).reduced(); // frequency as ratio from fundamental
             peaks.push(Peak {
                 freq,
-                magnitude: magnitudes[i] as f32,
+                magnitude: (magnitudes[i] / max_magnitude) as f32, // Normalize magnitude
             });
         }
     }
 
     peaks
+}
+
+fn play(nf: NormalForm) -> Result<(), Error> {
+    dbg!("playing");
+    weresocool_shared::Settings::init_default();
+    let basis = Basis {
+        f: Rational64::new(220, 1),
+        g: Rational64::new(1, 1),
+        l: Rational64::new(1, 1),
+        p: Rational64::new(0, 1),
+        a: Rational64::new(1, 1),
+        d: Rational64::new(1, 1),
+    };
+    let mut table = Defs::new();
+    let renderables = nf_to_vec_renderable(&nf, &mut table, &basis)?;
+    let render_voices = renderables_to_render_voices(renderables);
+
+    let render_manager = Arc::new(Mutex::new(RenderManager::init(None, None, true, None)));
+
+    render_manager
+        .lock()
+        .unwrap()
+        .push_render(render_voices, true);
+
+    let mut stream = real_time_render_manager(Arc::clone(&render_manager))?;
+    stream.start()?;
+    while let true = stream.is_active()? {}
+    stream.stop()?;
+
+    Ok(())
 }
