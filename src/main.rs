@@ -1,37 +1,48 @@
 use fastcwt::*;
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
+
 use hound::WavReader;
 use num::Rational64;
 use scop::Defs;
-use std::fs::File;
 use std::sync::{Arc, Mutex};
 use weresocool_ast::{NormalForm, PointOp};
-use weresocool_core::{
-    generation::parsed_to_render::{RenderReturn, RenderType},
-    interpretable::{InputType::Filename, Interpretable},
-    manager::{RenderManager, VisEvent},
-    portaudio::real_time_render_manager,
-};
+use weresocool_core::{manager::RenderManager, portaudio::real_time_render_manager};
 use weresocool_error::Error;
 use weresocool_instrument::renderable::{nf_to_vec_renderable, renderables_to_render_voices};
 use weresocool_instrument::Basis;
 
+const SAMPLE_RATE: usize = 11025;
+
 fn main() {
     let mut reader = WavReader::open("simple.wav").unwrap();
-    let duration_samples = reader.duration();
+    // let duration_samples = reader.duration();
 
     let mut input = vec![];
     for sample in reader.samples::<f32>() {
         input.push(sample.unwrap());
     }
 
-    let cwt_output = perform_cwt(&input);
+    let resampled_input = resample(
+        &[input],
+        reader.spec().sample_rate as f64,
+        SAMPLE_RATE as f64,
+        2.0,
+        256,
+        256,
+        // reader.spec().channels as usize,
+    )
+    .unwrap();
+
+    let cwt_output = perform_cwt(&resampled_input[0]);
     dbg!("finished cwt");
 
     let mut operations: Vec<Vec<PointOp>> = Vec::new();
     let window_size = 1024;
 
     for time_slice in cwt_output {
-        let peaks = identify_peaks(&time_slice, reader.spec().sample_rate as usize);
+        let peaks = identify_peaks(&time_slice, SAMPLE_RATE, 10);
         let mut ops: Vec<PointOp> = Vec::new();
 
         for peak in peaks {
@@ -42,7 +53,7 @@ fn main() {
                     pm: Rational64::new(0, 1),
                     pa: Rational64::new(0, 1),
                     g: Rational64::new((peak.magnitude * 1000.0).round() as i64, 1000),
-                    l: Rational64::new(window_size as i64, reader.spec().sample_rate as i64),
+                    l: Rational64::new(window_size as i64, SAMPLE_RATE as i64),
                     ..PointOp::default()
                 };
 
@@ -57,6 +68,7 @@ fn main() {
 
     dbg!(operations.len());
     dbg!(operations[0].len());
+    dbg!(operations[0].clone());
 
     let normal_form = NormalForm {
         operations,
@@ -90,7 +102,11 @@ pub struct Peak {
     pub magnitude: f32,
 }
 
-pub fn identify_peaks(data: &[num::Complex<f64>], sample_rate: usize) -> Vec<Peak> {
+pub fn identify_peaks(
+    data: &[num::Complex<f64>],
+    sample_rate: usize,
+    num_peaks: usize,
+) -> Vec<Peak> {
     let mut peaks = Vec::new();
 
     let magnitudes: Vec<f64> = data.iter().map(|c| c.norm()).collect();
@@ -101,13 +117,19 @@ pub fn identify_peaks(data: &[num::Complex<f64>], sample_rate: usize) -> Vec<Pea
 
     for i in 1..(n - 1) {
         if magnitudes[i] > magnitudes[i - 1] && magnitudes[i] > magnitudes[i + 1] {
-            let freq = Rational64::new((i * sample_rate) as i64, n as i64).reduced(); // frequency as ratio from fundamental
+            let freq = Rational64::new((i * 220) as i64, n as i64).reduced(); // frequency as ratio from fundamental
             peaks.push(Peak {
                 freq,
                 magnitude: (magnitudes[i] / max_magnitude) as f32, // Normalize magnitude
             });
         }
     }
+
+    // Sort the peaks by magnitude in descending order
+    peaks.sort_by(|a, b| b.magnitude.partial_cmp(&a.magnitude).unwrap());
+
+    // Return only the top N peaks
+    peaks.truncate(num_peaks);
 
     peaks
 }
@@ -123,21 +145,62 @@ fn play(nf: NormalForm) -> Result<(), Error> {
         a: Rational64::new(1, 1),
         d: Rational64::new(1, 1),
     };
+
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
     let mut table = Defs::new();
     let renderables = nf_to_vec_renderable(&nf, &mut table, &basis)?;
     let render_voices = renderables_to_render_voices(renderables);
 
-    let render_manager = Arc::new(Mutex::new(RenderManager::init(None, None, true, None)));
+    let render_manager = Arc::new(Mutex::new(RenderManager::init(None, Some(tx), true, None)));
 
+    let mut stream = real_time_render_manager(Arc::clone(&render_manager))?;
+
+    stream.start()?;
     render_manager
         .lock()
         .unwrap()
         .push_render(render_voices, true);
-
-    let mut stream = real_time_render_manager(Arc::clone(&render_manager))?;
-    stream.start()?;
-    while let true = stream.is_active()? {}
+    dbg!("pushed");
+    match rx.recv() {
+        Ok(_) => {}
+        Err(e) => {
+            println!("{}", e);
+            std::process::exit(1);
+        }
+    };
     stream.stop()?;
 
     Ok(())
+}
+
+fn resample(
+    input_data: &[Vec<f32>],
+    from_sample_rate: f64,
+    to_sample_rate: f64,
+    transition_bandwidth: f64,
+    sinc_len: usize,
+    oversampling_factor: usize,
+) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+    // Define the resampler parameters
+    let params = SincInterpolationParameters {
+        sinc_len,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Linear,
+        oversampling_factor,
+        window: WindowFunction::BlackmanHarris2,
+    };
+
+    // Create a resampler
+    let mut resampler = SincFixedIn::<f32>::new(
+        to_sample_rate / from_sample_rate,
+        transition_bandwidth,
+        params,
+        input_data[0].len(),
+        1, // channels,
+    )?;
+
+    // Resample the data
+    let output_data = resampler.process(input_data, None)?;
+
+    Ok(output_data)
 }

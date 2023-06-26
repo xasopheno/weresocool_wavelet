@@ -1462,6 +1462,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "realfft"
+version = "3.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "953d9f7e5cdd80963547b456251296efc2626ed4e3cbf36c869d9564e0220571"
+dependencies = [
+ "rustfft",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1516,6 +1525,18 @@ checksum = "436b050e76ed2903236f032a59761c1eb99e1b0aead2c257922771dab1fc8c78"
 [[package]]
 name = "reverb"
 version = "1.0.47"
+
+[[package]]
+name = "rubato"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4191a1456beb356999454c55cf94fe6a64400dd15ee5c21ee0df88845b667fa4"
+dependencies = [
+ "num-complex 0.4.3",
+ "num-integer",
+ "num-traits",
+ "realfft",
+]
 
 [[package]]
 name = "rustfft"
@@ -2128,6 +2149,7 @@ dependencies = [
  "ndarray",
  "num 0.4.0",
  "rand 0.8.5",
+ "rubato",
  "scop",
  "weresocool_ast",
  "weresocool_core",

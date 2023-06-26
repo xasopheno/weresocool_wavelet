@@ -18,3 +18,4 @@ weresocool_core = { path="../weresocool/core", version = "^1.0.47" }
 weresocool_instrument = { path="../weresocool/instrument", version = "^1.0.47" }
 weresocool_shared = { path="../weresocool/shared", version = "^1.0.47" }
 scop = { path="../weresocool/scop", version = "^1.0.47" }
+rubato = "0.14.0"
